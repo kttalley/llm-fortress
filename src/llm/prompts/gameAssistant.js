@@ -52,10 +52,10 @@ This is an agent-based simulation inspired by Dwarf Fortress and RimWorld, creat
 - Simulation First: World runs deterministically; LLMs provide cognition only
 - Agents, Not Chatbots: Dwarves operate in sense→evaluate→select→execute→reflect loops
 - Emergence Over Authoring: Stories emerge from mechanics, not scripts
-- Local, Self-Hosted AI: Uses Ollama (no cloud dependencies, private, hackable)
+- Local, Self-Hosted AI: Uses Ollama on the author's own hardware, behind a small proxy that caps load (no cloud dependency by default; an optional Groq fallback is off unless configured)
 
 **Key Architecture Components:**
-- Simulation Loop: 11-step tick system (scent, hunger, decisions, actions, visitors, combat, etc.)
+- Simulation Loop: 19-step tick loop (weather, ground cover, scents, drives, hunger, perception, decisions, actions, behavior traces, animals, carcasses, visitors, combat, deaths, cleanup, food production, crafting jobs, food spawning, visitor spawning)
 - World State: Single source of truth for all game entities and terrain
 - Rendering: CSS Grid ASCII renderer with dirty-checking (no frameworks)
 - AI/Cognition: Event-driven thought system with LLM-assisted generation

@@ -1,5 +1,5 @@
 
-# LLM Fortress Clone
+# LLM Fortress
 
 **An emergent, agent-based simulation inspired by Dwarf Fortress, powered by deterministic systems and self-hosted LLM cognition**
 
@@ -34,7 +34,7 @@ The result is a system where **stories emerge from mechanics**, not scripts.
 
 ## Key Systems
 
-- **13-step tick loop** — scent diffusion → hunger → drives → decisions → actions → visitors → combat → social → events → history → cleanup + weather + behavior traces
+- **19-step tick loop** — weather → ground cover → scents → drives → hunger → perception → decisions → actions → behavior traces → animals → carcasses → visitors → combat → deaths → cleanup → food production → crafting jobs → food spawning → visitor spawning
 - **Rich personality system** — 10 traits (0–1 range) feed into 6 archetypes, 8 skills, mood, drives, and relationship affinity
 - **Entity cognition via LLM** — thoughts on meetings, food, hunger, observations; conversations up to 6 turns with cooldowns; layered world context (L0 lore + L1 chronicle)
 - **Procedural world gen** — Simplex noise for elevation/moisture/temperature → biome classification, cellular automata caves, scent-based pathfinding, landmarks
@@ -133,13 +133,15 @@ This mirrors the design ethos of classic simulation games and agent-based modeli
 
 ### 4. Local, Self-Hosted AI
 
-All LLM functionality runs through a **self-hosted Ollama server**.
+All LLM functionality runs through a **self-hosted Ollama server**, behind a small proxy (`llm-proxy/`) that is the only path to the model.
 
-There are:
+By default there are:
 
 * no cloud dependencies
 * no required third-party APIs
 * no external data sharing
+
+An optional Groq fallback exists in the proxy for when the local server is down. It stays off unless you give the proxy a Groq key, and the key lives on the server, never in the browser.
 
 This keeps the system:
 
@@ -161,7 +163,7 @@ LLMs are treated as **replaceable components**, not hard dependencies.
 * **Hunting and fishing** mechanics for food gathering
 * **Crafting system** — workshop jobs and item creation
 * **Procedurally generated maps and biomes** (noise-based terrain, cellular automata caves, landmarks)
-* **Deterministic simulation loop** (13-step tick)
+* **Deterministic simulation loop** (19-step tick)
 * **Social interactions and conversations** with relationship history
 * **External visitors** (humans, goblins, elves with itineraries and A* pathing)
 * **World history generation** with race relations
@@ -201,7 +203,7 @@ LLMs are treated as **replaceable components**, not hard dependencies.
 * **Vite** for development and bundling
 * **HTML / CSS Grid** for ASCII rendering
 * **Rot.js** for weather and flora animation
-* **Ollama** (primary, local) or **Groq** (cloud fallback) for LLM inference
+* **Ollama** (self-hosted) for LLM inference, through a dependency-free Node proxy (`llm-proxy/`) with an optional server-side Groq fallback
 * No frameworks, no engines, minimal abstraction
 
 ---
@@ -262,7 +264,7 @@ src/
 │   ├── intentions.js      # Agent intention system
 │   ├── itineraries.js     # Visitor travel routes
 │   ├── thoughts.js        # Event-driven thought generation
-│   └── llmClient.js       # Groq/Ollama API, request queue
+│   └── llmClient.js       # Calls the inference proxy, per-tab request queue
 │
 ├── llm/                   # LLM-specific generators
 │   ├── nameGenerator.js   # Dwarf names and biographies
@@ -279,7 +281,7 @@ src/
 │       └── scenarios.js
 │
 ├── sim/                   # Core simulation systems
-│   ├── world.js           # Main tick loop (13-step orchestration)
+│   ├── world.js           # Main tick loop (19-step orchestration)
 │   ├── entities.js        # Dwarf/food/visitor creation
 │   ├── animals.js         # Animal entity management
 │   ├── movement.js        # A* pathfinding, scent maps
@@ -364,74 +366,71 @@ src/main.js               # Initialization and game loop
 
 ### Main Tick Loop
 
-The simulation advances through discrete ticks, with each tick executing systems in a deterministic order:
+The simulation advances through discrete ticks. Each tick runs these 19 steps in order (the numbers match the step comments in `tick()`, renumbered 1 to 19):
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    TICK EXECUTION                        │
 ├─────────────────────────────────────────────────────────┤
 │                                                          │
-│  1. WEATHER UPDATE                                       │
-│     ├─ Advance weather state machine                     │
-│     └─ Update ground cover (snow/wetness persistence)    │
+│  1. WEATHER                                              │
+│     └─ Advance the weather state machine                 │
 │                                                          │
-│  2. SCENT UPDATE                                         │
-│     ├─ Decay existing scents                             │
-│     ├─ Emit food scents                                  │
-│     └─ Emit presence scents (dwarf movement trails)      │
+│  2. GROUND COVER                                         │
+│     └─ Rain soaks in, snow piles up, thaw makes mud      │
 │                                                          │
-│  3. DRIVE DECAY & HOMEOSTASIS                            │
-│     ├─ Decay all entity drives                           │
-│     ├─ Mood homeostasis (drift toward setpoint)          │
-│     └─ Energy drain during wakefulness                   │
+│  3. SCENTS                                               │
+│     └─ Decay scents; emit food and presence scents       │
 │                                                          │
-│  4. HUNGER PROCESSING                                    │
-│     ├─ Increase hunger                                   │
-│     └─ Emit threshold events                             │
+│  4. DRIVES                                               │
+│     └─ Decay drives, mood homeostasis, energy drain      │
 │                                                          │
-│  5. PERCEPTION                                           │
-│     ├─ Update entity awareness of local world            │
-│     └─ Update at decision intervals                      │
+│  5. HUNGER                                               │
+│     └─ Apply hunger; emit threshold events               │
 │                                                          │
-│  6. DECISION PHASE (per entity)                         │
-│     ├─ Check combat threats → respond if needed          │
-│     ├─ Check critical hunger → seek food                 │
-│     ├─ Evaluate task priorities                          │
-│     └─ Select highest-priority task                      │
+│  6. PERCEPTION                                           │
+│     └─ Perceive the world at decision intervals          │
 │                                                          │
-│  7. ACTION PHASE (per entity)                           │
-│     └─ Execute movement, eating, working, socializing    │
+│  7. DECISIONS                                            │
+│     └─ Each dwarf picks its highest-priority task        │
 │                                                          │
-│  8. BEHAVIOR TRACE SAMPLING                              │
-│     └─ Record recent actions for LLM context             │
+│  8. ACTIONS                                              │
+│     └─ Movement, eating, working, socializing            │
 │                                                          │
-│  9. ANIMAL ECOSYSTEM                                     │
-│     ├─ Decay drives, age, perceive, decide, act          │
-│     └─ Convert fallen animals to carcasses               │
+│  9. BEHAVIOR TRACES                                      │
+│     └─ Sample recent behavior for LLM context            │
 │                                                          │
-│  10. VISITOR PROCESSING                                   │
-│      └─ Update trader/raider behaviors                    │
+│  10. ANIMALS                                             │
+│     └─ Drives, aging, fear, decisions, actions           │
 │                                                          │
-│  11. COMBAT RESOLUTION                                    │
-│      └─ Resolve attacks, apply damage                     │
+│  11. CARCASSES                                           │
+│     └─ Fallen animals become forageable food             │
 │                                                          │
-│  12. DEATH PROCESSING                                     │
-│       ├─ Remove dead entities                            │
-│       └─ Emit death events                                │
+│  12. VISITORS                                            │
+│     └─ Trader and raider behaviors                       │
 │                                                          │
-│  13. RESOURCE UPDATES                                     │
-│       ├─ Food production at farms                        │
-│       ├─ Queue crafting jobs                             │
-│       └─ Random food spawning                            │
+│  13. COMBAT                                              │
+│     └─ Resolve attacks, apply damage                     │
 │                                                          │
-│  14. VISITOR SPAWNING                                     │
-│       └─ Maybe spawn traders/raiders based on relations  │
+│  14. DEATHS                                              │
+│     └─ Process deaths, emit death events                 │
 │                                                          │
-│  15. MOOD DETECTION                                       │
-│       └─ Emit events for significant mood changes        │
+│  15. CLEANUP                                             │
+│     └─ Remove dead visitors and dwarves                  │
 │                                                          │
-│  16. EMIT TICK EVENT                                      │
-│       └─ Notify all subscribers                           │
+│  16. FOOD PRODUCTION                                     │
+│     └─ Farms and food production                         │
+│                                                          │
+│  17. CRAFTING JOBS                                       │
+│     └─ Queue crafting work (every 10 ticks)              │
+│                                                          │
+│  18. FOOD SPAWNING                                       │
+│     └─ Stochastic food pressure                          │
+│                                                          │
+│  19. VISITOR SPAWNING                                    │
+│     └─ Maybe spawn traders or raiders                    │
+│                                                          │
+│  Then: mood-shift events and the TICK event              │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -672,7 +671,7 @@ LLM prompts use layered context for richer responses:
 
 ```
 src/ai/llmClient.js
-├─ Server: Ollama (primary, local) or Groq (cloud fallback)
+├─ Server: llm-proxy/ → Ollama (optional Groq fallback, server-side)
 ├─ Model: llama3.1-claude or any Ollama-compatible
 ├─ Queue: Async, non-blocking, rate-limited
 └─ Functions:
@@ -1077,30 +1076,19 @@ The palette influences biome color modifiers for unique visual themes on every s
 
 ## LLM Configuration
 
-The project supports **Ollama** (primary, local) with **Groq** as a cloud fallback. Configure via environment variables:
+The browser never talks to the model directly. It calls `/projects/llm-fortress/api` on its own origin, nginx routes that to `llm-proxy/`, and the proxy forwards to Ollama. Inference settings and any API key live server-side in `llm-proxy/.env` (see `llm-proxy/.env.example` and `llm-proxy/README.md`):
 
 ```bash
-# Primary LLM Server (Ollama, OpenAI-compatible chat completions)
-#
-# Ollama chat completions URL (no default - must be supplied)
-# Example: VITE_VLLM_URL=http://localhost:11434/v1/chat/completions
-VITE_VLLM_URL=
-
-# Model name served by your Ollama instance
-# Example: VITE_VLLM_MODEL=incept5-narrator:latest
-VITE_VLLM_MODEL=
-
-# Groq Fallback (optional)
-# If Ollama is unavailable, the game falls back to Groq's API.
-# Get a free API key at https://console.groq.com
-# Put your key in .env.local (not here) so it stays out of git.
-#
-# VITE_GROQ_API_KEY=gsk_...
-# VITE_GROQ_MODEL=llama-3.1-8b-instant   # default
-# VITE_GROQ_MODEL=llama-3.3-70b-versatile # smarter, slower
+OLLAMA_URL=http://127.0.0.1:11434/v1/chat/completions
+OLLAMA_MODEL=qwen3-4b-4k:latest
+# GROQ_API_KEY=            # optional fallback, server-side only
+MAX_CONCURRENT=4           # global cap across all visitors
+MAX_QUEUE=8                # overflow gets a fast 503
 ```
 
-If Ollama is unavailable or unconfigured, the system falls back to Groq automatically. If both are offline, local hardcoded fallbacks keep the simulation running.
+The proxy caps concurrent requests to the GPUs across every visitor, rate-limits per IP, and returns a fast `503` when it is busy. When that happens, or when no model is reachable, the game uses its scripted fallback lines and keeps running.
+
+Never put secrets or inference URLs in a `VITE_*` variable: Vite inlines those into the public bundle.
 
 Or update `src/ai/llmClient.js` to match your setup.
 
@@ -1159,8 +1147,8 @@ Thoughtful chaos is welcome.
 
 ## License
 
-No license specified.
-All rights reserved by the author unless otherwise noted.
+<!-- FILL IN: confirm the license (MIT proposed). Then add a LICENSE file and replace this section with: "MIT. See LICENSE." -->
+No license specified yet. All rights reserved by the author until a license is added.
 
 ---
 
