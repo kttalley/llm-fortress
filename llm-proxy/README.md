@@ -10,7 +10,7 @@ forwards to Ollama. The Ollama URL, the model name and any API key stay on the s
   at once, across every visitor and tab. Up to `MAX_QUEUE` more (default 8) wait up to
   `QUEUE_TIMEOUT_MS` (default 4 s). Anything beyond that gets an immediate `503`, and the
   game uses its scripted lines instead.
-- **Per-IP rate limit.** Token bucket, `RATE_PER_MINUTE` (30) with `RATE_BURST` (10). Over
+- **Per-IP rate limit.** Token bucket, `RATE_PER_MINUTE` (60) with `RATE_BURST` (20); one active player makes roughly 15 requests in the first few seconds. Over
   the limit returns `429`.
 - **CORS** limited to `ALLOWED_ORIGINS` (the site plus local dev). Other origins get `403`.
 - **Input limits.** Max 20 messages, `MAX_PROMPT_CHARS` total, `max_tokens` and `num_ctx`

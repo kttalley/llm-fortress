@@ -40,8 +40,8 @@ export const config = {
   maxQueue: int(env.MAX_QUEUE, 8),
   queueTimeoutMs: int(env.QUEUE_TIMEOUT_MS, 4000),
   upstreamTimeoutMs: int(env.UPSTREAM_TIMEOUT_MS, 60000),
-  ratePerMinute: int(env.RATE_PER_MINUTE, 30),
-  rateBurst: int(env.RATE_BURST, 10),
+  ratePerMinute: int(env.RATE_PER_MINUTE, 60),
+  rateBurst: int(env.RATE_BURST, 20),
   trustProxy: env.TRUST_PROXY === '1',
   allowedOrigins: (env.ALLOWED_ORIGINS ||
     'https://design.kristiantalley.com,http://localhost:5173,http://localhost:4173')
