@@ -19,7 +19,28 @@ forwards to Ollama. The Ollama URL, the model name and any API key stay on the s
 - **Optional upstream secret.** `UPSTREAM_AUTH_HEADER` is sent to Ollama so the GPU host's
   nginx can refuse requests that didn't come through this proxy.
 
-No dependencies. Node 20.12 or newer.
+No dependencies. Node 18 or newer (on 20.12+ it reads `.env` itself; otherwise load it via
+systemd `EnvironmentFile=` or your shell).
+
+## Production (systemd)
+
+```ini
+# /etc/systemd/system/llm-fortress-proxy.service
+[Unit]
+Description=LLM Fortress inference proxy
+After=network-online.target
+
+[Service]
+User=ktt
+WorkingDirectory=/path/to/dorf-fortress-clone/llm-proxy
+EnvironmentFile=/path/to/dorf-fortress-clone/llm-proxy/.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ## Run
 

@@ -15,8 +15,9 @@
  * - Optional shared-secret header to the upstream, so the GPU host's nginx
  *   can refuse anything that didn't come through this proxy.
  *
- * No dependencies: Node's built-in http and fetch. Node 20.12+ (for
- * process.loadEnvFile); without it, set the env vars another way.
+ * No dependencies: Node's built-in http and fetch, Node 18 or newer. On Node
+ * 20.12+ it reads llm-proxy/.env itself; on older Node, load the env another
+ * way (the systemd unit uses EnvironmentFile=).
  */
 
 import http from 'node:http';

@@ -6,7 +6,7 @@
   "description": "Inference proxy for LLM Fortress: global concurrency cap, per-IP rate limit, CORS, optional Groq fallback",
   "main": "server.js",
   "type": "module",
-  "engines": { "node": ">=20.12" },
+  "engines": { "node": ">=18" },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
