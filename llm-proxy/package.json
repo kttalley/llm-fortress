@@ -2,6 +2,7 @@
   "name": "llm-proxy",
   "version": "2.0.0",
   "private": true,
+  "license": "MIT",
   "description": "Inference proxy for LLM Fortress: global concurrency cap, per-IP rate limit, CORS, optional Groq fallback",
   "main": "server.js",
   "type": "module",

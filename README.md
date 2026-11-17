@@ -1147,8 +1147,7 @@ Thoughtful chaos is welcome.
 
 ## License
 
-<!-- FILL IN: confirm the license (MIT proposed). Then add a LICENSE file and replace this section with: "MIT. See LICENSE." -->
-No license specified yet. All rights reserved by the author until a license is added.
+MIT. See [LICENSE](LICENSE).
 
 ---
 
