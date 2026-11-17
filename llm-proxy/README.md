@@ -1,156 +1,60 @@
-# LLM Proxy Server
+# llm-proxy
 
-Secure proxy service for OpenAI API requests from LLM Fortress game.
+The only path from the LLM Fortress browser client to inference. The browser calls
+`POST /api/chat` and `GET /api/health` on its own origin; nginx routes those here; this
+forwards to Ollama. The Ollama URL, the model name and any API key stay on the server.
 
-## Purpose
+## What it does
 
-This proxy keeps your OpenAI API key server-side and secure, while allowing the game to use OpenAI as a fallback when the primary Ollama server is overloaded.
+- **Global concurrency cap.** At most `MAX_CONCURRENT` requests (default 4) reach the GPUs
+  at once, across every visitor and tab. Up to `MAX_QUEUE` more (default 8) wait up to
+  `QUEUE_TIMEOUT_MS` (default 4 s). Anything beyond that gets an immediate `503`, and the
+  game uses its scripted lines instead.
+- **Per-IP rate limit.** Token bucket, `RATE_PER_MINUTE` (30) with `RATE_BURST` (10). Over
+  the limit returns `429`.
+- **CORS** limited to `ALLOWED_ORIGINS` (the site plus local dev). Other origins get `403`.
+- **Input limits.** Max 20 messages, `MAX_PROMPT_CHARS` total, `max_tokens` and `num_ctx`
+  clamped. The client can't choose the model.
+- **Optional Groq fallback** when Ollama fails, with `GROQ_API_KEY` held here.
+- **Optional upstream secret.** `UPSTREAM_AUTH_HEADER` is sent to Ollama so the GPU host's
+  nginx can refuse requests that didn't come through this proxy.
 
-## Setup
+No dependencies. Node 20.12 or newer.
 
-### 1. Install Dependencies
+## Run
 
-```bash
-cd llm-proxy
-npm install
+```sh
+cp .env.example .env   # fill in OLLAMA_URL, OLLAMA_MODEL
+npm start              # listens on 127.0.0.1:8787
 ```
 
-### 2. Configure Environment
-
-```bash
-cp .env.example .env
-nano .env  # Add your OpenAI API key
-```
-
-Edit `.env`:
-```
-OPENAI_API_KEY=sk-your-actual-api-key-here
-OPENAI_MODEL=gpt-4o-mini
-PORT=3001
-ALLOWED_ORIGINS=http://localhost:5173,https://yourdomain.com
-```
-
-### 3. Run the Server
-
-**Development (with auto-reload):**
-```bash
-npm run dev
-```
-
-**Production:**
-```bash
-npm start
-```
-
-**Production (with PM2 - recommended):**
-```bash
-# Install PM2 globally if not already installed
-sudo npm install -g pm2
-
-# Start the service
-pm2 start server.js --name llm-proxy
-
-# Make it start on system boot
-pm2 startup
-pm2 save
-```
-
-## Testing
-
-### Health Check
-```bash
-curl http://localhost:3001/health
-```
-
-Should return:
-```json
-{
-  "status": "ok",
-  "hasApiKey": true,
-  "model": "gpt-4o-mini"
-}
-```
-
-### Test Generation
-```bash
-curl -X POST http://localhost:3001/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "You are a dwarf. Express a brief thought.",
-    "maxTokens": 50,
-    "temperature": 0.8
-  }'
-```
-
-## Nginx Configuration
-
-Add this to your nginx config to proxy `/api/llm-proxy` to this service:
+nginx (on the host serving the game):
 
 ```nginx
-location /api/llm-proxy/ {
-    proxy_pass http://localhost:3001/api/;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
+location /projects/llm-fortress/api/ {
+    proxy_pass http://127.0.0.1:8787;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    # Increase timeout for LLM responses
-    proxy_read_timeout 30s;
-    proxy_connect_timeout 10s;
+    proxy_read_timeout 75s;
 }
 ```
 
-Then reload nginx:
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
+Local dev: run the proxy, then `npm run dev` at the repo root; Vite forwards
+`/projects/llm-fortress/api` to it.
+
+## Lock down the upstream
+
+The proxy only protects the GPUs if Ollama itself isn't reachable from the internet. Bind
+Ollama to localhost, or put the GPU host's nginx in front of it and require the
+`UPSTREAM_AUTH_HEADER` secret (or an IP allowlist for the proxy host).
+
+## Test
+
+```sh
+node ../tests/test-llm-proxy.js   # CORS, rate limit, validation, health (mock upstream)
+npm run loadtest                  # 200 concurrent requests against a mock upstream
 ```
 
-## Security
-
-- ✅ API key is stored server-side only (in `.env`)
-- ✅ Not exposed in client-side JavaScript
-- ✅ Only accessible from your game's domain (CORS)
-- ✅ Runs on localhost, not exposed to internet directly
-- ✅ Nginx handles SSL/TLS termination
-
-## Monitoring
-
-### View Logs (PM2)
-```bash
-pm2 logs llm-proxy
-```
-
-### Check Status
-```bash
-pm2 status
-```
-
-### Monitor Resource Usage
-```bash
-pm2 monit
-```
-
-## Troubleshooting
-
-### Port Already in Use
-Change `PORT` in `.env` to a different port (e.g., 3002)
-
-### CORS Errors
-Add your production domain to `ALLOWED_ORIGINS` in `.env`
-
-### OpenAI API Errors
-- Check your API key is valid
-- Ensure you have credits in your OpenAI account
-- Check the logs: `pm2 logs llm-proxy`
-
-## Cost Monitoring
-
-The proxy logs token usage for each request. Monitor your OpenAI dashboard:
-https://platform.openai.com/usage
-
-Typical costs with gpt-4o-mini:
-- ~$0.15 per 1M input tokens
-- ~$0.60 per 1M output tokens
-- Average game session: < $0.01
+Load test result (Nov 16, 2026, mock upstream at 1.5 s per reply, defaults): the upstream
+never saw more than 4 requests at once; 12 requests were served (4 running plus 8 queued);
+the other 188 got `503` in about 100 ms.

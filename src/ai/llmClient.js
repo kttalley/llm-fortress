@@ -1,34 +1,26 @@
 /**
- * LLM Client with Groq Fallback
- * Async, non-blocking integration with vLLM (primary, local rig) and Groq API (fallback)
- * Used for generating dwarf thoughts and speech - NEVER in main tick loop
+ * LLM Client
+ * Async, non-blocking calls to the inference proxy (llm-proxy/), which is the
+ * only path to the model. The browser never sees the Ollama URL, the model
+ * name, or any API key; the proxy holds those server-side, caps global
+ * concurrency, rate-limits per IP, and can fall back to Groq on its own.
+ * Used for generating dwarf thoughts and speech - NEVER in main tick loop.
+ * When the proxy is busy (503), rate-limited (429) or unreachable, calls
+ * resolve to null and the game uses its scripted fallbacks.
  */
 
-// Primary Ollama Configuration (OpenAI-compatible chat completions)
-// Endpoint and model MUST be supplied via env vars (see .env / .env.example).
-// Vite statically replaces `import.meta.env.VITE_*` in builds; the try/catch
-// lets this module also load under plain Node (tests), where import.meta.env
-// is undefined and we fall back to process.env.
-let VLLM_URL = '';
-let VLLM_MODEL = '';
-let GROQ_API_KEY;
-let GROQ_MODEL = 'llama-3.1-8b-instant';
+// Proxy base URL. Not a secret: it is the same-origin path nginx routes to the
+// proxy. Override with VITE_LLM_PROXY_URL for unusual setups. Under plain Node
+// (tests), import.meta.env is undefined and we fall back to process.env.
+let PROXY_URL = '/projects/llm-fortress/api';
 try {
-  VLLM_URL = import.meta.env.VITE_VLLM_URL || '';
-  VLLM_MODEL = import.meta.env.VITE_VLLM_MODEL || '';
-  GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
-  GROQ_MODEL = import.meta.env.VITE_GROQ_MODEL || 'llama-3.1-8b-instant';
+  PROXY_URL = import.meta.env.VITE_LLM_PROXY_URL || `${import.meta.env.BASE_URL || '/'}api`;
 } catch {
   const env = (typeof process !== 'undefined' && process.env) || {};
-  VLLM_URL = env.VITE_VLLM_URL || '';
-  VLLM_MODEL = env.VITE_VLLM_MODEL || '';
-  GROQ_API_KEY = env.VITE_GROQ_API_KEY;
-  GROQ_MODEL = env.VITE_GROQ_MODEL || 'llama-3.1-8b-instant';
+  PROXY_URL = env.VITE_LLM_PROXY_URL || PROXY_URL;
 }
+PROXY_URL = PROXY_URL.replace(/\/+$/, '');
 const REQUEST_TIMEOUT = 60000;
-
-// Groq Fallback Configuration
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 // Explicit Ollama context window. Ollama defaults can be as low as 2048;
 // layered system prompts (L0 lore + history) plus completion must fit, and
@@ -57,64 +49,7 @@ function buildMessages(prompt, system) {
 }
 
 /**
- * Generate text completion from Groq (fallback)
- * Uses chat completions API with the prompt as a user message
- * @param {string} prompt - The prompt to send
- * @param {object} options - Generation options (supports options.system)
- * @returns {Promise<string>} Generated text
- */
-async function generateWithGroq(prompt, options = {}) {
-  if (!GROQ_API_KEY) return null;
-
-  const {
-    maxTokens = 100,
-    temperature = 0.8,
-    stop,
-    system,
-  } = options;
-
-  try {
-    console.log(`[LLM/Groq] Using model: ${GROQ_MODEL}`);
-
-    const response = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages: buildMessages(prompt, system),
-        max_tokens: maxTokens,
-        temperature,
-        stop: (stop && stop.length > 0) ? stop : undefined,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      console.error(`[LLM/Groq] Error ${response.status}:`, errorData);
-      throw new Error(`Groq error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const result = data.choices?.[0]?.message?.content?.trim() || '';
-
-    if (data.usage) {
-      console.log(`[LLM/Groq] ✓ Response (${result.length} chars) - Tokens: ${data.usage.total_tokens}`);
-    } else {
-      console.log(`[LLM/Groq] ✓ Received response (${result.length} chars)`);
-    }
-
-    return result;
-  } catch (error) {
-    console.error('[LLM/Groq] Generation failed:', error.message);
-    return null;
-  }
-}
-
-/**
- * Generate text completion from vLLM (primary) with Groq fallback
+ * Generate a text completion through the inference proxy
  * @param {string} prompt - The prompt to send (user message)
  * @param {object} options - Generation options
  * @param {string} [options.system] - Optional system message; emitted as a real
@@ -122,8 +57,9 @@ async function generateWithGroq(prompt, options = {}) {
  *   behavior is identical to a single user message (backward compatible).
  * @param {number} [options.numCtx] - Explicit Ollama context window override
  * @param {boolean} [options.interactive] - Marks interactive (player-facing)
- *   calls; lifts the queue concurrency cap from 3 to 10
- * @returns {Promise<string>} Generated text
+ *   calls; lifts this tab's queue concurrency cap from 3 to 10 (the proxy
+ *   still enforces its own global cap)
+ * @returns {Promise<string|null>} Generated text, or null to use a fallback
  */
 export async function generate(prompt, options = {}) {
   const {
@@ -135,69 +71,43 @@ export async function generate(prompt, options = {}) {
     numCtx = DEFAULT_NUM_CTX,
   } = options;
 
-  // vLLM first (primary, local rig for narration)
-  if (!VLLM_URL || !VLLM_MODEL) {
-    console.warn('[LLM/vLLM] Skipped: VITE_VLLM_URL / VITE_VLLM_MODEL are not configured');
-  } else {
-    const requestBody = {
-      model: VLLM_MODEL,
-      messages: buildMessages(prompt, system),
-      max_tokens: maxTokens,
-      temperature,
-      top_p: topP,
-      stop: (stop && stop.length > 0) ? stop : undefined,
-      stream: false,
-      think: false,
-      // Ollama-specific passthrough (like `think` above): pin the context
-      // window so layered prompts are never silently truncated from the front.
-      options: { num_ctx: numCtx },
-    };
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+  try {
+    const response = await fetch(`${PROXY_URL}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: buildMessages(prompt, system),
+        max_tokens: maxTokens,
+        temperature,
+        top_p: topP,
+        stop: (stop && stop.length > 0) ? stop : undefined,
+        num_ctx: numCtx,
+      }),
+      signal: controller.signal,
+    });
 
-    try {
-      console.log(`[LLM/vLLM] Using model: ${VLLM_MODEL}, sending ${prompt.length} char prompt`);
-
-      const response = await fetch(VLLM_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[LLM/vLLM] Server error ${response.status}:`, errorText);
-        throw new Error(`vLLM API error: ${response.status} - ${errorText}`);
-      }
-
-      const data = await response.json();
-      const result = data.choices?.[0]?.message?.content?.trim() || '';
-
-      if (data.usage) {
-        console.log(`[LLM/vLLM] ✓ Response (${result.length} chars) - Tokens: ${data.usage.total_tokens}`);
-      } else {
-        console.log(`[LLM/vLLM] ✓ Received response (${result.length} chars)`);
-      }
-      return result;
-    } catch (error) {
-      console.error('[LLM/vLLM] Generation failed:', error.message);
-    } finally {
-      clearTimeout(timeoutId);
+    if (response.status === 503 || response.status === 429) {
+      console.log(`[LLM] Proxy ${response.status === 503 ? 'busy' : 'rate-limited'}; using fallback`);
+      return null;
     }
-  }
+    if (!response.ok) {
+      console.error(`[LLM] Proxy error ${response.status}`);
+      return null;
+    }
 
-  // Groq fallback
-  if (GROQ_API_KEY) {
-    console.log('[LLM] vLLM failed, attempting Groq fallback...');
-    const groqResult = await generateWithGroq(prompt, options);
-    if (groqResult) return groqResult;
+    const data = await response.json();
+    const result = data.choices?.[0]?.message?.content?.trim() || '';
+    console.log(`[LLM/${data.provider || 'proxy'}] ✓ Response (${result.length} chars)`);
+    return result;
+  } catch (error) {
+    console.error('[LLM] Generation failed:', error.message);
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return null;
 }
 
 /**
@@ -254,46 +164,23 @@ async function processQueue() {
 }
 
 /**
- * Check if LLM server is available (tries primary, then fallback)
+ * Check whether the proxy can reach a model (Ollama, or Groq as its fallback)
  * @returns {Promise<{ available: boolean, provider: string }>}
  */
 export async function checkLLMHealth() {
-  // Try Ollama first (primary). Ollama exposes OpenAI's /v1/models for discovery.
-  // We derive the base URL by stripping the chat/completions suffix.
-  if (!VLLM_URL) {
-    console.warn('[LLM/Ollama] Health check skipped: VITE_VLLM_URL not configured');
-  } else {
-    const baseUrl = VLLM_URL.replace(/\/chat\/completions\/?$/, '');
-    const modelsUrl = `${baseUrl}/models`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-    try {
-      console.log('[LLM/Ollama] Health check: connecting to', modelsUrl);
-      const response = await fetch(modelsUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        mode: 'cors',
-        credentials: 'omit',
-      });
-      console.log('[LLM/Ollama] Health check: response', response.status, response.ok ? '✓' : '✗');
-
-      if (response.ok) {
-        return { available: true, provider: 'ollama' };
-      }
-    } catch (error) {
-      console.warn('[LLM/Ollama] Health check failed:', error.message);
-    } finally {
-      clearTimeout(timeoutId);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch(`${PROXY_URL}/health`, { signal: controller.signal, credentials: 'omit' });
+    if (response.ok) {
+      const data = await response.json();
+      return { available: !!data.available, provider: data.provider || null };
     }
+  } catch (error) {
+    console.warn('[LLM] Health check failed:', error.message);
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  // Fall back to Groq if Ollama is unavailable
-  if (GROQ_API_KEY) {
-    console.log('[LLM] Ollama unavailable, Groq fallback available');
-    return { available: true, provider: 'groq' };
-  }
-
   return { available: false, provider: null };
 }
 

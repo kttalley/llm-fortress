@@ -11,8 +11,7 @@
 
 // --- Fake LLM endpoint: capture request bodies, return a canned response ---
 const capturedBodies = [];
-process.env.VITE_VLLM_URL = 'http://127.0.0.1:9/v1/chat/completions'; // never actually reached
-process.env.VITE_VLLM_MODEL = 'fake-model';
+process.env.VITE_LLM_PROXY_URL = 'http://127.0.0.1:9/api'; // never actually reached (fetch is stubbed)
 
 globalThis.fetch = async (url, init) => {
   capturedBodies.push(JSON.parse(init.body));
@@ -51,7 +50,8 @@ let body = capturedBodies.at(-1);
 assert(Array.isArray(body.messages) && body.messages.length === 2, 'messages is a 2-element array');
 assert(body.messages[0].role === 'system' && body.messages[0].content === 'hello system', 'first message is the system role');
 assert(body.messages[1].role === 'user' && body.messages[1].content === 'hello user', 'second message is the user role');
-assert(typeof body.options?.num_ctx === 'number' && body.options.num_ctx >= 2048, `explicit options.num_ctx set (${body.options?.num_ctx})`);
+// The client sends num_ctx to the proxy, which forwards it as Ollama's options.num_ctx (see test-llm-proxy.js).
+assert(typeof body.num_ctx === 'number' && body.num_ctx >= 2048, `explicit num_ctx sent to the proxy (${body.num_ctx})`);
 
 await generate('plain prompt', {});
 body = capturedBodies.at(-1);
